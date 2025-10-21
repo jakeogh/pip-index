@@ -1,228 +1,189 @@
 #!/usr/bin/env python3
 """
-Regenerate the entire pip index by scanning all repos with .pip_index marker.
+Update pip index with a new package version.
 
-This script:
-1. Finds all repos in MYAPPS_DIR that have .pip_index marker
-2. Reads their pyproject.toml to get package name and version
-3. Gets their current git commit hash
-4. Gets their GitHub user/org from git remote
-5. Calls update_pip_index.py to add them to the index
+This script updates the custom pip index hosted on GitHub Pages to include
+a new version of a package, pointing to GitHub's automatic tarball URL.
 
 Usage:
-    ./regenerate_pip_index.py
+    update_pip_index.py PACKAGE_NAME VERSION COMMIT_HASH [--index-repo PATH]
+
+Example:
+    update_pip_index.py eprint 0.0.1760909962 abc123def456 --index-repo ~/.myapps/pip-index
+
+The script:
+1. Updates simple/{package}/index.html with the new version
+2. Updates simple/index.html to include the package if not listed
+3. Does NOT commit - caller should commit/push
 """
 
+import argparse
 import re
-import subprocess
-import sys
 from pathlib import Path
 
-try:
-    import tomllib
-except ImportError:
-    import tomli as tomllib
 
-
-MYAPPS_DIR = Path.home() / "_myapps"
-PIP_INDEX_REPO = MYAPPS_DIR / "pip-index"
-UPDATE_SCRIPT = PIP_INDEX_REPO / "update_pip_index.py"
-GITHUB_USER = "jakeogh"
-
-
-def get_github_info(repo_path):
+def create_package_index_html(package_name, versions_data):
     """
-    Get GitHub user/org and repo name from git remote.
+    Create the index.html for a specific package.
+
+    Args:
+        package_name: Name of the package
+        versions_data: List of tuples (version, commit_hash, github_user, github_repo)
 
     Returns:
-        tuple: (github_user, github_repo) or (None, None)
+        str: HTML content
     """
-    try:
-        # Get the remote URL
-        result = subprocess.run(
-            ["git", "remote", "get-url", "origin"],
-            cwd=repo_path,
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-        remote_url = result.stdout.strip()
+    html = """<!DOCTYPE html>
+<html>
+<head>
+    <title>Links for {package}</title>
+</head>
+<body>
+    <h1>Links for {package}</h1>
+""".format(package=package_name)
 
-        # Parse the URL
-        # Handle both SSH and HTTPS formats:
-        # git@github.com:user/repo.git
-        # https://github.com/user/repo.git
-        # ssh://git@github.com/user/repo.git
-        pattern = r"github\.com[:/]([^/]+)/([^/\s]+?)(?:\.git)?$"
-        match = re.search(pattern, remote_url)
+    for version, commit_hash, github_user, github_repo in versions_data:
+        tarball_url = f"https://github.com/{github_user}/{github_repo}/archive/{commit_hash}.tar.gz"
+        link_url = f"{tarball_url}#egg={package_name}-{version}"
+        link_text = f"{package_name}-{version}"
+        html += f'    <a href="{link_url}">{link_text}</a><br>\n'
 
-        if match:
-            github_user = match.group(1)
-            github_repo = match.group(2)
-            return github_user, github_repo
-
-        print(f"WARNING: Could not parse remote URL: {remote_url}", file=sys.stderr)
-        return None, None
-
-    except subprocess.CalledProcessError:
-        return None, None
+    html += """</body>
+</html>
+"""
+    return html
 
 
-def get_git_commit(repo_path):
-    """Get the current git commit hash for a repository."""
-    try:
-        result = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            cwd=repo_path,
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-        return result.stdout.strip()
-    except subprocess.CalledProcessError:
-        return None
-
-
-def read_package_info(repo_path):
+def create_root_index_html(packages):
     """
-    Read package name and version from pyproject.toml.
+    Create the root simple/index.html listing all packages.
+
+    Args:
+        packages: List of package names
 
     Returns:
-        tuple: (package_name, version) or (None, None)
+        str: HTML content
     """
-    pyproject_path = repo_path / "pyproject.toml"
+    html = """<!DOCTYPE html>
+<html>
+<head>
+    <title>Simple Index</title>
+</head>
+<body>
+    <h1>Simple Index</h1>
+"""
 
-    if not pyproject_path.exists():
-        return None, None
+    for package in sorted(packages):
+        html += f'    <a href="{package}/">{package}</a><br>\n'
 
-    try:
-        with open(pyproject_path, "rb") as f:
-            data = tomllib.load(f)
-
-        project = data.get("project", {})
-        return project.get("name"), project.get("version")
-    except Exception as e:
-        print(f"WARNING: Could not read {pyproject_path}: {e}", file=sys.stderr)
-        return None, None
+    html += """</body>
+</html>
+"""
+    return html
 
 
-def find_repos_with_pip_index():
+def load_existing_versions(package_dir):
     """
-    Find all repositories with .pip_index marker file.
+    Load existing versions from a package's index.html.
 
     Returns:
-        List of tuples: (repo_path, package_name, version, commit_hash)
+        List of tuples (version, commit_hash, github_user, github_repo)
     """
-    repos = []
+    index_file = package_dir / "index.html"
+    if not index_file.exists():
+        return []
 
-    if not MYAPPS_DIR.exists():
-        print(f"ERROR: {MYAPPS_DIR} does not exist", file=sys.stderr)
-        return repos
+    versions = []
+    content = index_file.read_text()
 
-    for item in MYAPPS_DIR.iterdir():
-        if not item.is_dir():
-            continue
+    pattern = r'href="https://github\.com/([^/]+)/([^/]+)/archive/([^"#]+)\.tar\.gz(?:#egg=[^"]+)?">([^<]+)</a>'
 
-        # Skip special directories
-        if item.name.startswith(".") or item.name == "pip-index":
-            continue
+    for match in re.finditer(pattern, content):
+        github_user = match.group(1)
+        github_repo = match.group(2)
+        commit_hash = match.group(3)
+        link_text = match.group(4)
 
-        # Check for .pip_index marker
-        if not (item / ".pip_index").exists():
-            continue
+        if link_text.endswith('.tar.gz'):
+            version = link_text.replace(".tar.gz", "").split("-", 1)[1]
+        else:
+            version = link_text.split("-", 1)[1] if "-" in link_text else link_text
 
-        # Get package info
-        package_name, version = read_package_info(item)
-        if not package_name or not version:
-            print(f"Skipping {item.name}: no package name or version", file=sys.stderr)
-            continue
+        versions.append((version, commit_hash, github_user, github_repo))
 
-        # Get commit hash
-        commit_hash = get_git_commit(item)
-        if not commit_hash:
-            print(f"Skipping {item.name}: not a git repo", file=sys.stderr)
-            continue
-
-        repos.append((item, package_name, version, commit_hash))
-        print(f"Found: {package_name} {version} ({commit_hash[:8]})")
-
-    return repos
+    return versions
 
 
-def regenerate_index():
-    """Regenerate the entire pip index."""
-    if not UPDATE_SCRIPT.exists():
-        print(f"ERROR: {UPDATE_SCRIPT} not found", file=sys.stderr)
-        sys.exit(1)
+def update_index(index_repo, package_name, version, commit_hash, github_user, github_repo):
+    """
+    Update the pip index with a new package version.
 
-    print("Finding repositories with .pip_index marker...")
-    repos = find_repos_with_pip_index()
+    Args:
+        index_repo: Path to the pip-index repository
+        package_name: Name of the package
+        version: Version string
+        commit_hash: Git commit hash
+        github_user: GitHub username
+        github_repo: GitHub repository name
+    """
+    index_repo = Path(index_repo)
+    simple_dir = index_repo / "simple"
+    package_dir = simple_dir / package_name
 
-    if not repos:
-        print("No repositories found with .pip_index marker")
-        sys.exit(0)
+    package_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"\nFound {len(repos)} repositories")
-    print("\nRegenerating index...")
+    versions = load_existing_versions(package_dir)
 
-    for repo_path, package_name, version, commit_hash in sorted(
-        repos, key=lambda x: x[1]
-    ):
-        print(f"\nAdding {package_name} {version}...")
+    new_version = (version, commit_hash, github_user, github_repo)
 
-        # Get GitHub user and repo from git remote
-        github_user, github_repo = get_github_info(repo_path)
+    versions = [v for v in versions if v[0] != version]
+    versions.append(new_version)
 
-        if not github_user or not github_repo:
-            print(
-                f"WARNING: Could not determine GitHub info for {package_name}, using defaults",
-                file=sys.stderr,
-            )
-            github_user = GITHUB_USER
-            github_repo = repo_path.name
+    versions.sort(key=lambda x: x[0])
 
-        try:
-            result = subprocess.run(
-                [
-                    sys.executable,
-                    str(UPDATE_SCRIPT),
-                    package_name,
-                    version,
-                    commit_hash,
-                    "--index-repo",
-                    str(PIP_INDEX_REPO),
-                    "--github-user",
-                    github_user,
-                    "--github-repo",
-                    github_repo,
-                ],
-                capture_output=True,
-                text=True,
-                check=True,
-            )
-            print(result.stdout)
-        except subprocess.CalledProcessError as e:
-            print(f"ERROR: Failed to add {package_name}: {e}", file=sys.stderr)
-            if e.stdout:
-                print(e.stdout)
-            if e.stderr:
-                print(e.stderr)
+    package_html = create_package_index_html(package_name, versions)
+    (package_dir / "index.html").write_text(package_html)
 
-    print("\n" + "=" * 60)
-    print("✓ Index regeneration complete!")
-    print("\nNext steps:")
-    print(f"  cd {PIP_INDEX_REPO}")
-    print(f"  git add simple/")
-    print(f"  git commit -m 'Regenerate index with fixed URLs'")
-    print(f"  git push")
+    print(f"Updated {package_name} index: {len(versions)} version(s)")
+
+    update_root_index(simple_dir)
+
+
+def update_root_index(simple_dir):
+    """
+    Update the root simple/index.html with all packages.
+    """
+    packages = []
+    for item in simple_dir.iterdir():
+        if item.is_dir() and item.name != ".git":
+            packages.append(item.name)
+
+    root_html = create_root_index_html(packages)
+    (simple_dir / "index.html").write_text(root_html)
+
+    print(f"Updated root index: {len(packages)} package(s)")
 
 
 def main():
-    print(f"MYAPPS_DIR: {MYAPPS_DIR}")
-    print(f"PIP_INDEX_REPO: {PIP_INDEX_REPO}")
-    print()
+    parser = argparse.ArgumentParser(description="Update pip index with a new package version")
+    parser.add_argument("package", help="Package name")
+    parser.add_argument("version", help="Package version")
+    parser.add_argument("commit", help="Git commit hash")
+    parser.add_argument("--index-repo", default=str(Path.home() / "_myapps" / "pip-index"), help="Path to pip-index repository")
+    parser.add_argument("--github-user", default="jakeogh", help="GitHub username")
+    parser.add_argument("--github-repo", help="GitHub repo name (default: same as package name)")
 
-    regenerate_index()
+    args = parser.parse_args()
+
+    github_repo = args.github_repo or args.package
+
+    update_index(args.index_repo, args.package, args.version, args.commit, args.github_user, github_repo)
+
+    print(f"\nTo publish changes:")
+    print(f"  cd {args.index_repo}")
+    print(f"  git add simple/")
+    print(f"  git commit -m 'Update {args.package} to {args.version}'")
+    print(f"  git push")
 
 
 if __name__ == "__main__":
