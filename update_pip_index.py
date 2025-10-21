@@ -18,8 +18,6 @@ The script:
 """
 
 import argparse
-import sys
-from datetime import datetime
 from pathlib import Path
 
 
@@ -47,10 +45,12 @@ def create_package_index_html(package_name, versions_data):
 
     for version, commit_hash, github_user, github_repo in versions_data:
         tarball_url = f"https://github.com/{github_user}/{github_repo}/archive/{commit_hash}.tar.gz"
-        # Use the version in the filename that pip expects
-        filename = f"{package_name}-{version}.tar.gz"
+        # Add #egg= fragment so pip can parse the version
+        link_url = f"{tarball_url}#egg={package_name}-{version}"
+        # Link text should just be package-version (no .tar.gz)
+        link_text = f"{package_name}-{version}"
 
-        html += f'    <a href="{tarball_url}">{filename}</a><br>\n'
+        html += f'    <a href="{link_url}">{link_text}</a><br>\n'
 
     html += """</body>
 </html>
@@ -101,19 +101,25 @@ def load_existing_versions(package_dir):
     content = index_file.read_text()
 
     # Parse existing links
-    # Format: https://github.com/{user}/{repo}/archive/{commit}.tar.gz
+    # Format: https://github.com/{user}/{repo}/archive/{commit}.tar.gz#egg={package}-{version}
     import re
 
-    pattern = r'href="https://github\.com/([^/]+)/([^/]+)/archive/([^"]+)\.tar\.gz">([^<]+)</a>'
+    # Updated pattern to handle both old format (without #egg) and new format (with #egg)
+    pattern = r'href="https://github\.com/([^/]+)/([^/]+)/archive/([^"#]+)\.tar\.gz(?:#egg=[^"]+)?">([^<]+)</a>'
 
     for match in re.finditer(pattern, content):
         github_user = match.group(1)
         github_repo = match.group(2)
         commit_hash = match.group(3)
-        filename = match.group(4)
+        link_text = match.group(4)
 
-        # Extract version from filename: package-version.tar.gz
-        version = filename.replace(".tar.gz", "").split("-", 1)[1]
+        # Extract version from link text: package-version (no .tar.gz in new format)
+        if link_text.endswith('.tar.gz'):
+            # Old format
+            version = link_text.replace(".tar.gz", "").split("-", 1)[1]
+        else:
+            # New format
+            version = link_text.split("-", 1)[1] if "-" in link_text else link_text
 
         versions.append((version, commit_hash, github_user, github_repo))
 
