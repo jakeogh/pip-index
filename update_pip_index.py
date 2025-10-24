@@ -46,9 +46,11 @@ def create_package_index_html(package_name, versions_data):
 
     for version, commit_hash, github_user, github_repo in versions_data:
         tarball_url = f"https://github.com/{github_user}/{github_repo}/archive/{commit_hash}.tar.gz"
-        # Removed deprecated #egg= fragment - modern pip doesn't need it
+        # Keep #egg= fragment for now - pip 23.x still needs it for version resolution
+        # TODO: Remove when pip 25+ is widely deployed
+        link_url = f"{tarball_url}#egg={package_name}-{version}"
         link_text = f"{package_name}-{version}"
-        html += f'    <a href="{tarball_url}">{link_text}</a><br>\n'
+        html += f'    <a href="{link_url}">{link_text}</a><br>\n'
 
     html += """</body>
 </html>
