@@ -40,13 +40,15 @@ def create_package_index_html(package_name, versions_data):
 </head>
 <body>
     <h1>Links for {package}</h1>
-""".format(package=package_name)
+""".format(
+        package=package_name
+    )
 
     for version, commit_hash, github_user, github_repo in versions_data:
         tarball_url = f"https://github.com/{github_user}/{github_repo}/archive/{commit_hash}.tar.gz"
-        link_url = f"{tarball_url}#egg={package_name}-{version}"
+        # Removed deprecated #egg= fragment - modern pip doesn't need it
         link_text = f"{package_name}-{version}"
-        html += f'    <a href="{link_url}">{link_text}</a><br>\n'
+        html += f'    <a href="{tarball_url}">{link_text}</a><br>\n'
 
     html += """</body>
 </html>
@@ -96,6 +98,7 @@ def load_existing_versions(package_dir):
     versions = []
     content = index_file.read_text()
 
+    # Updated pattern to handle both old (#egg=) and new (no fragment) formats
     pattern = r'href="https://github\.com/([^/]+)/([^/]+)/archive/([^"#]+)\.tar\.gz(?:#egg=[^"]+)?">([^<]+)</a>'
 
     for match in re.finditer(pattern, content):
@@ -104,7 +107,7 @@ def load_existing_versions(package_dir):
         commit_hash = match.group(3)
         link_text = match.group(4)
 
-        if link_text.endswith('.tar.gz'):
+        if link_text.endswith(".tar.gz"):
             version = link_text.replace(".tar.gz", "").split("-", 1)[1]
         else:
             version = link_text.split("-", 1)[1] if "-" in link_text else link_text
@@ -114,7 +117,14 @@ def load_existing_versions(package_dir):
     return versions
 
 
-def update_index(index_repo, package_name, version, commit_hash, github_user, github_repo):
+def update_index(
+    index_repo,
+    package_name,
+    version,
+    commit_hash,
+    github_user,
+    github_repo,
+):
     """
     Update the pip index with a new package version.
 
@@ -165,19 +175,38 @@ def update_root_index(simple_dir):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Update pip index with a new package version")
+    parser = argparse.ArgumentParser(
+        description="Update pip index with a new package version"
+    )
     parser.add_argument("package", help="Package name")
     parser.add_argument("version", help="Package version")
     parser.add_argument("commit", help="Git commit hash")
-    parser.add_argument("--index-repo", default=str(Path.home() / "_myapps" / "pip-index"), help="Path to pip-index repository")
-    parser.add_argument("--github-user", default="jakeogh", help="GitHub username")
-    parser.add_argument("--github-repo", help="GitHub repo name (default: same as package name)")
+    parser.add_argument(
+        "--index-repo",
+        default=str(Path.home() / "_myapps" / "pip-index"),
+        help="Path to pip-index repository",
+    )
+    parser.add_argument(
+        "--github-user",
+        default="jakeogh",
+        help="GitHub username",
+    )
+    parser.add_argument(
+        "--github-repo", help="GitHub repo name (default: same as package name)"
+    )
 
     args = parser.parse_args()
 
     github_repo = args.github_repo or args.package
 
-    update_index(args.index_repo, args.package, args.version, args.commit, args.github_user, github_repo)
+    update_index(
+        args.index_repo,
+        args.package,
+        args.version,
+        args.commit,
+        args.github_user,
+        github_repo,
+    )
 
     print(f"\nTo publish changes:")
     print(f"  cd {args.index_repo}")
